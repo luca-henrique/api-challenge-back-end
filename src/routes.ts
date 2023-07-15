@@ -10,6 +10,7 @@ import {Lot} from './entity/Lot';
 import {Invoice} from './entity/Invoice';
 
 import {entityManager} from './data-source';
+import {Between, ILike} from 'typeorm';
 
 const papa = require('papaparse');
 
@@ -73,33 +74,6 @@ router.get('/invoice', async (req: Request, res: Response) => {
     return res.json(invoices);
   } catch (error) {}
 });
-
-router.get('/invoices', async (req: Request, res: Response) => {
-  try {
-    const {nome, valor_final, valor_inicial, id_lote} = req.params;
-
-    console.log(nome);
-
-    var files = fs.readdirSync('./uploads');
-
-    res.json(files);
-  } catch (error) {}
-});
-
-router.get(
-  '/invoices/:nome&:valor_inicial&:valor_final&:id_lote',
-  async (req: Request, res: Response) => {
-    try {
-      const {nome, valor_final, valor_inicial, id_lote} = req.params;
-      console.log(nome);
-      console.log(valor_final);
-
-      var files = fs.readdirSync('./uploads');
-
-      res.json(files);
-    } catch (error) {}
-  },
-);
 
 router.post(
   '/read-invoice-csv',
@@ -229,5 +203,167 @@ async function lerPDF(arquivoPDF) {
 function isOnlyNumbers(string) {
   return /^\d+$/.test(string);
 }
+
+router.get('/invoices', async (req: Request, res: Response) => {
+  try {
+    var files = fs.readdirSync('./uploads');
+    res.json(files);
+  } catch (error) {}
+});
+
+router.get('/invoices/filters', async (req, res) => {
+  const {nome, valor_inicial, valor_final, id_lote} = JSON.parse(
+    JSON.stringify(req.query),
+  );
+
+  const invoiceRepository = await entityManager.getRepository(Invoice).find({
+    where: {
+      nameDrawn: ILike(`%${nome}%`),
+      value: Between(valor_inicial, valor_final),
+    },
+    relations: {
+      idLot: true,
+    },
+  });
+
+  let invoicesByLotId = [];
+
+  invoiceRepository.map((invoice) => {
+    if (invoice.idLot.id == id_lote) {
+      invoicesByLotId.push(invoice);
+    }
+  });
+
+  var files = fs.readdirSync('./uploads');
+
+  var filesFiltersByInvoiceId = [];
+
+  files.map((file) => {
+    let filesSplit = file.split('.');
+
+    for (let index = 0; index < invoicesByLotId.length; index++) {
+      const invoiceByLotId = invoicesByLotId[index];
+
+      for (
+        let positionFile = 0;
+        positionFile < filesSplit.length;
+        positionFile++
+      ) {
+        const fileSplit = filesSplit[positionFile];
+
+        if (fileSplit == invoiceByLotId.id) {
+          filesFiltersByInvoiceId.push(`${fileSplit}.pdf`);
+        }
+      }
+    }
+  });
+  res.json(filesFiltersByInvoiceId);
+});
+
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+
+var PdfPrinter = require('pdfmake');
+
+const documentPdf = require('pdfkit-table');
+
+router.get(
+  '/invoice/report',
+  upload.single('files'),
+  async (req: Request, res: Response) => {
+    const invoices = await readInvoice();
+
+    let bodyPdfInvoiceReport = [];
+
+    invoices.map((invoice) => {
+      bodyPdfInvoiceReport.push([
+        invoice.id,
+        invoice.nameDrawn,
+        invoice.idLot.id,
+        invoice.value,
+        invoice.digitableLine,
+      ]);
+    });
+
+    let file = fs.createWriteStream('./document.pdf');
+
+    let doc = new documentPdf({margin: 30, size: 'A4'});
+
+    doc.pipe(file);
+
+    // table
+    const table = {
+      title: 'Title',
+      subtitle: 'Subtitle',
+      headers: ['Country', 'Conversion rate', 'Trend'],
+      rows: [
+        ['Switzerland', '12%', '+1.12%'],
+        ['France', '67%', '-0.98%'],
+        ['England', '33%', '+4.44%'],
+      ],
+    };
+    // A4 595.28 x 841.89 (portrait) (about width sizes)
+    // width
+    await doc.table(table, {
+      width: 300,
+    });
+    // or columnsSize
+    await doc.table(table, {
+      columnsSize: [200, 100, 100],
+    });
+    // done!
+    doc.pipe(res);
+
+    doc.end();
+  },
+);
+
+router.get('/gerar-pdf', async (req, res) => {
+  const subDocument = await PDFDocument.create();
+
+  const page = subDocument.addPage();
+
+  const invoices = await readInvoice();
+
+  let bodyPdfInvoiceReport = [];
+
+  invoices.map((invoice) => {
+    bodyPdfInvoiceReport.push([
+      invoice.id,
+      invoice.nameDrawn,
+      invoice.idLot.id,
+      invoice.value,
+      invoice.digitableLine,
+    ]);
+  });
+
+  page.drawText('id', {x: 20, y: 800, size: 18});
+  page.drawText('nome_sacado', {x: 50, y: 800, size: 18});
+  page.drawText('id_lote', {x: 180, y: 800, size: 18});
+  page.drawText('valor', {x: 240, y: 800, size: 18});
+  page.drawText('linha_digitavel', {x: 290, y: 800, size: 18});
+
+  invoices.map((invoice, index) => {
+    page.drawText(invoice.id, {x: 20, y: 770 - 20 * index, size: 12});
+    page.drawText(invoice.nameDrawn, {x: 50, y: 770 - 20 * index, size: 12});
+    page.drawText(`${invoice.idLot.id}`, {
+      x: 180,
+      y: 770 - 20 * index,
+      size: 12,
+    });
+    page.drawText(`${invoice.value}`, {x: 240, y: 770 - 20 * index, size: 12});
+    page.drawText(invoice.digitableLine, {
+      x: 290,
+      y: 770 - 20 * index,
+      size: 12,
+    });
+  });
+
+  const pdfBytes = await subDocument.save();
+
+  res.type('application/pdf');
+  res.header('Content-Disposition', `attachment; filename="${1}.pdf"`);
+  res.send(Buffer.from(pdfBytes, 'base64'));
+});
 
 export {router};

@@ -19,7 +19,7 @@ export class Invoice extends BaseEntity {
 
   @OneToOne(() => Lot)
   @JoinColumn({name: 'id_lot'})
-  idLot: number;
+  idLot: Lot;
 
   @Column('decimal', {precision: 5, scale: 2})
   value: number;
